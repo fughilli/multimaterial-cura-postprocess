@@ -92,6 +92,7 @@ class TempProcessor(Processor):
         super(TempProcessor, self).__init__()
         self.line_processors.append(self.process_temp_change)
         self.idle_temps = {}
+        self.printing_temps = {}
 
     def process_temp_change(self, line):
         """Determines if this line is a temperature change line, and updates
@@ -109,14 +110,29 @@ class TempProcessor(Processor):
         if temperature == 0:
             return True
 
+        self.update_idle_temps(extruder, temperature)
+        self.update_printing_temps(extruder, temperature)
+        return True
+
+    def update_idle_temps(self, extruder, temperature):
         if not self.idle_temps.has_key(extruder):
             self.idle_temps[extruder] = temperature
-            return True
+            return
 
         old_min_temp = self.idle_temps[extruder]
         if old_min_temp > temperature:
             self.idle_temps[extruder] = temperature
-        return True
+        return
+
+    def update_printing_temps(self, extruder, temperature):
+        if not self.printing_temps.has_key(extruder):
+            self.printing_temps[extruder] = temperature
+            return
+
+        old_max_temp = self.printing_temps[extruder]
+        if old_max_temp < temperature:
+            self.printing_temps[extruder] = temperature
+        return
 
 # TODO: Make blocks dictionaries.
 class BlockProcessor(Processor):
@@ -166,8 +182,13 @@ class PrimeRetraceProcessor(Processor):
         self.feed_override = feed_override
         self.z_override = z_override
 
-        temp_ramp_line = "M104 T%d S%d" % (active_tool, idle_temps[active_tool])
-        self.lines = [";WIPE-PRIME-TOWER", temp_ramp_line]
+        #temp_ramp_line = "M104 T%d S%d" % (active_tool, idle_temps[active_tool])
+        self.lines = [";WIPE-PRIME-TOWER"]
+
+        for tool, idle_temp in idle_temps.items():
+            self.lines.append("M104 T%d S%d" % (tool, idle_temp))
+
+        self.active_idle_line = "M109 T%d S%d" % (active_tool, idle_temps[active_tool])
 
         self.line_processors.append(self.process_prime_line)
 
@@ -181,13 +202,13 @@ class PrimeRetraceProcessor(Processor):
             if line.startswith('G') and ('X' in line or 'Y' in line):
                 # At the first move command, rewrite normally.
                 self.seen_move_line = True
-                self.lines.append(rewrite_move(line, self.feed_override * 10, None))
+                self.lines.append(rewrite_move(line, self.feed_override * 15, None))
                 # Repeat the first move command, lowering to the correct Z.
                 self.lines.append(rewrite_move(line, self.feed_override, self.z_override))
                 return
 
             # For lines before we jog down in Z, we can move fast(er).
-            self.lines.append(rewrite_move(line, self.feed_override * 10, None))
+            self.lines.append(rewrite_move(line, self.feed_override * 15, None))
             return
         # TODO: Feed rate override, no extruder moves, no Z
         self.lines.append(rewrite_move(line, self.feed_override, None))
@@ -195,7 +216,26 @@ class PrimeRetraceProcessor(Processor):
     def get_lines(self):
         # Cut the last 5 lines. This is a hack to remove spurious jogs back to
         # the part at the end of the prime tower.
-        return self.lines[:-3]
+        return self.lines[:-5] + [self.active_idle_line]
+
+class PrimeProcessor(Processor):
+    def __init__(self, active_tool, idle_temps, printing_temps):
+        super(PrimeProcessor, self).__init__()
+        self.lines = [";PRE-PRIME-TOWER"]
+        for tool, idle_temp in idle_temps.items():
+            if tool == active_tool:
+                continue
+            self.lines.append("M104 T%d S%d" % (tool, idle_temp))
+        self.lines.append("M109 T%d S%d" % (active_tool,
+                                            printing_temps[active_tool]))
+
+        self.line_processors.append(self.process_prime_line)
+
+    def process_prime_line(self, line):
+        self.lines.append(line)
+
+    def get_lines(self):
+        return self.lines
         
 
 def write_blocks(blocks, output):
@@ -207,7 +247,7 @@ def write_blocks(blocks, output):
         for line in lines:
             output.write(line + os.linesep)
 
-def modify_blocks(blocks, feedrate_override, idle_temps):
+def modify_blocks(blocks, feedrate_override, idle_temps, printing_temps):
     output_blocks = []
     last_prime_block = None
     for block in blocks:
@@ -215,7 +255,11 @@ def modify_blocks(blocks, feedrate_override, idle_temps):
         # Cache the last prime block for insertion after extruder end
         if state == S_PRIME_BLOCK:
             last_prime_block = block
-            output_blocks.append(block)
+            prime_processor = PrimeProcessor(active_tool, idle_temps,
+                                             printing_temps)
+            prime_processor.process_lines(lines)
+            output_blocks.append((state, active_tool,
+                                  prime_processor.get_lines(), finish_z))
             continue
 
         if state == S_END_EXTRUDER:
@@ -275,7 +319,8 @@ if __name__ == '__main__':
         # Modify blocks (copy prime blocks to extruder end positions, overriding
         # feed rate and prepending temp ramp down)
         modified_blocks = modify_blocks(blocks=block_processor.get_blocks(),
-            feedrate_override=300, idle_temps=temp_processor.idle_temps)
+            feedrate_override=400, idle_temps=temp_processor.idle_temps,
+            printing_temps=temp_processor.printing_temps)
     
         with open(add_suffix(sys.argv[1]), 'w+') as outfile:
             write_blocks(modified_blocks, outfile)
