@@ -191,6 +191,11 @@ class PrimeRetraceProcessor(Processor):
             return
         # TODO: Feed rate override, no extruder moves, no Z
         self.lines.append(rewrite_move(line, self.feed_override, None))
+
+    def get_lines(self):
+        # Cut the last 5 lines. This is a hack to remove spurious jogs back to
+        # the part at the end of the prime tower.
+        return self.lines[:-3]
         
 
 def write_blocks(blocks, output):
@@ -240,7 +245,7 @@ def modify_blocks(blocks, feedrate_override, idle_temps):
             prime_retrace_processor.process_lines(last_prime_block[2])
             # Add the processed wipe block
             output_blocks.append((S_PRIME_BLOCK, last_prime_block_active_tool,
-                prime_retrace_processor.lines, last_prime_block_z_override))
+                prime_retrace_processor.get_lines(), last_prime_block_z_override))
             # Add the end extruder block
             output_blocks.append(block)
             continue
