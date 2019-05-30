@@ -264,6 +264,8 @@ if __name__ == '__main__':
         temp_processor.process_lines(lines)
         # Get the blocks from the original gcode file
         block_processor.process_lines(lines)
+
+        print(temp_processor.idle_temps)
     
         # Modify blocks (copy prime blocks to extruder end positions, overriding
         # feed rate and prepending temp ramp down)
