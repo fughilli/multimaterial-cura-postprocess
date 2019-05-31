@@ -19,13 +19,11 @@ raw_re_state_table = [(';TYPE:WALL.*', S_PART),
 
 compiled_re_state_table = [(re.compile(k), v) for k, v in raw_re_state_table]
 
-tool_regex = re.compile('^T(?P<tool>[0-9]*)$')
-temp_regex = re.compile('^M10[49]( T(?P<tool>[0-9]*))? S(?P<temp>[0-9]*)$')
-move_z_regex = re.compile('^G[01] [^Z]*Z(?P<z_coordinate>[0-9](.[0-9]*)?).*$')
-# move_regex = re.compile('^(?P<gcode>G[01]) ((?P<feed>F[0-9]*)|(?P<coordinate>[XYZ][0-9].?[0-9]*)')
-
-move_regex = re.compile('^G[01]$')
 feed_regex = re.compile('^F([0-9].)?[0-9]*$')
+move_regex = re.compile('^G[01]$')
+move_z_regex = re.compile('^G[01] [^Z]*Z(?P<z_coordinate>[0-9](.[0-9]*)?).*$')
+temp_regex = re.compile('^M10[49]( T(?P<tool>[0-9]*))? S(?P<temp>[0-9]*)$')
+tool_regex = re.compile('^T(?P<tool>[0-9]*)$')
 z_regex = re.compile('^Z([0-9].)?[0-9]*$')
 
 
@@ -341,7 +339,6 @@ def write_blocks(blocks, output):
 
 
 def append_block(block_list, block):
-    #print("Appending block %d of length %d" % (block.state, len(block.lines)))
     return block_list + [block]
 
 
@@ -389,7 +386,6 @@ def modify_blocks(blocks, feedrate_override, idle_temps, printing_temps):
                   (block.active_tool, last_prime_block.active_tool,
                    last_prime_block.finish_z))
 
-            # assert(last_prime_block_active_tool == active_tool)
             # idle temps and feedrate are global; active tool comes from
             # last_prime_block
             prime_retrace_processor = PrimeRetraceProcessor(
@@ -412,20 +408,16 @@ def modify_blocks(blocks, feedrate_override, idle_temps, printing_temps):
             prime_wipe_block.state = S_PRIME_WIPE_BLOCK
             prime_wipe_block.active_tool = block.active_tool
             prime_wipe_block.lines = prime_retrace_processor.get_lines()
-            #output_blocks.append(prime_wipe_block)
             output_blocks = append_block(output_blocks, prime_wipe_block)
             # Add the end extruder block
-            #output_blocks.append(block)
             output_blocks = append_block(output_blocks, block)
             continue
 
-        #output_blocks.append(block)
         output_blocks = append_block(output_blocks, block)
 
     end_block = Block([])
     end_block.state = S_END
     end_block.lines = [("M104 T%d S0" % k) for k, v in idle_temps.items()]
-    #output_blocks.append(end_block)
     output_blocks = append_block(output_blocks, end_block)
 
     return output_blocks
