@@ -5,14 +5,16 @@ import re
 import os
 
 S_INIT = 0
-S_PRIME_BLOCK = 1
-S_PRIME_WIPE_BLOCK = 2
-S_START_EXTRUDER = 3
-S_END_EXTRUDER = 4
-S_PART = 5
-S_END = 6
+S_POST_INIT = 1
+S_PRIME_BLOCK = 2
+S_PRIME_WIPE_BLOCK = 3
+S_START_EXTRUDER = 4
+S_END_EXTRUDER = 5
+S_PART = 6
+S_END = 7
 
-raw_re_state_table = [(';TYPE:WALL.*', S_PART),
+raw_re_state_table = [(';END-INIT', S_POST_INIT),
+                      (';TYPE:(WALL.*|SKIN)', S_PART),
                       (';TYPE:PRIME-TOWER', S_PRIME_BLOCK),
                       ('; EXTRUDER START HOME', S_START_EXTRUDER),
                       ('; EXTRUDER END HOME', S_END_EXTRUDER)]
