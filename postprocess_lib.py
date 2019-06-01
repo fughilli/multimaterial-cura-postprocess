@@ -133,19 +133,30 @@ class TempProcessor(Processor):
         self.line_processors.append(self.process_temp_change)
         self.idle_temps = {}
         self.printing_temps = {}
+        self.target_temps = {}
+        self.reached_target = {}
 
     def process_temp_change(self, line):
         """Determines if this line is a temperature change line, and updates
         state accordingly."""
-        match = temp_regex.match(line)
-        if match is None:
+        op, args = parse_gcode(line)
+        if op is None:
             return False
-        extruder_string = match.groupdict()['tool']
-        if extruder_string is None:
-            extruder = self.active_tool
-        else:
-            extruder = int(extruder_string)
-        temperature = int(match.groupdict()['temp'])
+        if not (op == "M104" or op == "M109"):
+            return False
+
+        extruder = self.active_tool
+        if 'T' in args.keys():
+            extruder = args['T']
+
+        temperature = args['S']
+
+        if op == 'M104':
+            self.target_temps[extruder] = temperature
+            self.reached_target[extruder] = False
+        if op == 'M109':
+            self.target_temps[extruder] = temperature
+            self.reached_target[extruder] = True
 
         if temperature == 0:
             return True
@@ -175,6 +186,45 @@ class TempProcessor(Processor):
         return
 
 
+class TempMinimizeProcessor(TempProcessor):
+
+    def __init__(self):
+        super(TempMinimizeProcessor, self).__init__()
+        self.line_processors = [self.process_temp_line] + self.line_processors
+
+        self.lines = []
+
+    def process_temp_line(self, line):
+        op, args = parse_gcode(line)
+
+        if not (op == "M104" or op == "M109"):
+            self.lines.append(line)
+            return
+
+        extruder = self.active_tool
+        if 'T' in args.keys():
+            extruder = args['T']
+
+        if extruder not in self.target_temps.keys():
+            self.lines.append(line)
+            return
+
+        if self.target_temps[extruder] == args['S']:
+            # Target temperature has already been set
+            if op == 'M104':
+                return
+
+            # For M109, we need to be sure that the temp has been reached to
+            # remove
+            if self.reached_target[extruder]:
+                return
+
+        self.lines.append(line)
+
+    def get_lines(self):
+        return self.lines
+
+
 class Block(object):
 
     def __init__(self,
@@ -182,7 +232,9 @@ class Block(object):
                  state=S_INIT,
                  start_z=0,
                  finish_z=0,
-                 active_tool=0):
+                 active_tool=0,
+                 finish_target_temps={},
+                 finish_reached_target={}):
         self.lines = lines
         self.state = state
         self.start_z = start_z
@@ -190,14 +242,18 @@ class Block(object):
         # previously printed material when wiping.
         self.finish_z = finish_z
         self.active_tool = active_tool
+        self.finish_target_temps = finish_target_temps
+        self.finish_reached_target = finish_reached_target
 
     def copy(self):
         return Block(self.lines[:], self.state, self.start_z, self.finish_z,
-                     self.active_tool)
+                     self.active_tool, dict(self.finish_target_temps.items()),
+                     dict(self.finish_reached_target.items()))
 
     def copy_empty_lines(self):
         return Block([], self.state, self.start_z, self.finish_z,
-                     self.active_tool)
+                     self.active_tool, dict(self.finish_target_temps.items()),
+                     dict(self.finish_reached_target.items()))
 
     def remove_matching_ops(self, op_regex_string):
         op_regex = re.compile(op_regex_string)
@@ -212,22 +268,33 @@ class Block(object):
             new_lines.append(line)
         self.lines = new_lines
 
-    def add_temperatures(self, wait, idle_temps, printing_temps):
+    def add_temperatures(self, wait, idle_temps, printing_temps, target_temps,
+                         reached_target):
         # (idle|printing)_temps are dicts of tool_number -> temperature
         new_lines = []
         extruding = False
         for line in self.lines:
             op, args = parse_gcode(line)
             if 'E' in args.keys() and not extruding:
-                new_lines.append('M10%s T%d S%d' %
-                                 (('9' if wait else '4'), self.active_tool,
-                                  printing_temps[self.active_tool]))
+                if (self.active_tool not in self.finish_target_temps.keys()
+                   ) or (self.finish_target_temps[self.active_tool] !=
+                         printing_temps[self.active_tool]):
+                    self.finish_target_temps[self.active_tool] = (
+                        printing_temps[self.active_tool])
+                    self.finish_reached_target[self.active_tool] = wait
+                if not ((self.active_tool in target_temps.keys()) and
+                        (target_temps[self.active_tool] == printing_temps[
+                            self.active_tool]) and
+                        reached_target[self.active_tool]):
+                    new_lines.append('M10%s T%d S%d' %
+                                     (('9' if wait else '4'), self.active_tool,
+                                      printing_temps[self.active_tool]))
                 extruding = True
             new_lines.append(line)
         self.lines = new_lines
 
 
-class BlockProcessor(Processor):
+class BlockProcessor(TempProcessor):
 
     def __init__(self):
         super(BlockProcessor, self).__init__()
@@ -244,6 +311,10 @@ class BlockProcessor(Processor):
             if re.match(line):
                 # Append the previous current block before starting work on the
                 # new one.
+                self.current_block.finish_target_temps = dict(
+                    self.target_temps.items())
+                self.current_block.finish_reached_target = dict(
+                    self.reached_target.items())
                 self.blocks.append(self.current_block)
 
                 self.current_block = Block(lines=[],
@@ -267,11 +338,13 @@ class PrimeRetraceProcessor(Processor):
 
         self.lines = [";WIPE-PRIME-TOWER"]
 
-        for tool, idle_temp in idle_temps.items():
-            self.lines.append("M104 T%d S%d" % (tool, idle_temp))
+        self.idle_temps = idle_temps
+        if self.idle_temps is not None:
+            for tool, idle_temp in idle_temps.items():
+                self.lines.append("M104 T%d S%d" % (tool, idle_temp))
 
-        self.active_idle_line = "M109 T%d S%d" % (active_tool,
-                                                  idle_temps[active_tool])
+            self.active_idle_line = "M109 T%d S%d" % (active_tool,
+                                                      idle_temps[active_tool])
 
         self.line_processors.append(self.process_prime_line)
 
@@ -301,7 +374,9 @@ class PrimeRetraceProcessor(Processor):
     def get_lines(self):
         # Cut the last 5 lines. This is a hack to remove spurious jogs back to
         # the part at the end of the prime tower.
-        return self.lines[:-5] + [self.active_idle_line]
+        if self.idle_temps is not None:
+            return self.lines[:-5] + [self.active_idle_line]
+        return self.lines[:-5]
 
 
 def rewrite_move(line, feed_override, z_force):
@@ -319,11 +394,19 @@ def rewrite_move(line, feed_override, z_force):
 
 class PrimeProcessor(Processor):
 
-    def __init__(self, active_tool, idle_temps, printing_temps):
+    def __init__(self, active_tool, pre_ramp, idle_temps, printing_temps,
+                 feed_override):
         super(PrimeProcessor, self).__init__()
-        self.lines = [";PRE-PRIME-TOWER"]
-        self.lines.append("M109 T%d S%d" %
-                          (active_tool, printing_temps[active_tool]))
+        self.pre_ramp = pre_ramp
+        self.pre_lines = [";PRE-PRIME-TOWER"]
+        self.pre_lines.append("M104 T%d S%d" %
+                              (active_tool, printing_temps[active_tool]))
+
+        self.printing_temps = printing_temps
+        self.active_tool = active_tool
+        self.feed_override = feed_override
+
+        self.lines = []
 
         self.line_processors.append(self.process_prime_line)
 
@@ -331,7 +414,15 @@ class PrimeProcessor(Processor):
         self.lines.append(line)
 
     def get_lines(self):
-        return self.lines
+        if self.pre_ramp:
+            warmup_trace_processor = PrimeRetraceProcessor(
+                None, self.feed_override, self.active_tool, None)
+            warmup_trace_processor.process_lines(self.lines)
+            # Hack to get the nozzle to the correct height during warm-up wipe
+            return (self.pre_lines + ["G91", "G0 Z-0.2", "G90"] +
+                    warmup_trace_processor.get_lines() +
+                    ["G91", "G0 Z0.2", "G90"] + self.lines)
+        return self.pre_lines + self.lines
 
 
 def write_blocks(blocks, output):
@@ -347,40 +438,60 @@ def append_block(block_list, block):
 def modify_blocks(blocks, feedrate_override, idle_temps, printing_temps):
     output_blocks = []
     last_prime_block = Block([])
+    last_block = Block([])
     # Hack to make sure that we get the right temperature ramps for the
     # raft/initial prime tower layer
     seen_first_part_block_tools = []
     for block in blocks:
+        if block.state == S_INIT:
+            output_blocks = append_block(output_blocks, block)
+            last_block = block
+            continue
         # Remove temperature lines from all but the initial block. We will
         # completely override them.
-        if block.state != S_INIT:
-            if set(seen_first_part_block_tools) == set(idle_temps.keys()):
-                block.remove_matching_ops('M10[49]')
+        if set(seen_first_part_block_tools) == set(idle_temps.keys()):
+            block.remove_matching_ops('M10[49]')
 
         if block.state == S_PRIME_BLOCK:
             # Cache the last prime block for insertion after extruder end
             last_prime_block = block.copy()
 
             # Process the prime block. This adds a temperature ramp and wait to
-            # the beginning of the block for the active tool.
-            prime_processor = PrimeProcessor(block.active_tool, idle_temps,
-                                             printing_temps)
+            # the beginning of the block for the active tool, if the tool is not
+            # already at temperature.
+            pre_ramp = not (last_block.finish_target_temps[
+                block.active_tool] == printing_temps[block.active_tool] and
+                            last_block.finish_reached_target[block.active_tool])
+            if pre_ramp:
+                print("Pre-ramping to %d (prev: %d reached: %s)" %
+                      (printing_temps[block.active_tool],
+                       last_block.finish_target_temps[block.active_tool],
+                       last_block.finish_reached_target[block.active_tool]))
+            prime_processor = PrimeProcessor(block.active_tool, pre_ramp,
+                                             idle_temps, printing_temps,
+                                             feedrate_override)
             prime_processor.process_lines(block.lines)
 
             # Copy the block, adding the processed lines, and append to the
             # block list.
             new_block = block.copy_empty_lines()
             new_block.lines = prime_processor.get_lines()
-            new_block.add_temperatures(True, idle_temps, printing_temps)
+            new_block.add_temperatures(True, idle_temps, printing_temps,
+                                       last_block.finish_target_temps,
+                                       last_block.finish_reached_target)
             output_blocks = append_block(output_blocks, new_block)
+            last_block = new_block
             continue
 
         if block.state == S_PART:
             new_block = block.copy()
-            new_block.add_temperatures(False, idle_temps, printing_temps)
+            new_block.add_temperatures(False, idle_temps, printing_temps,
+                                       last_block.finish_target_temps,
+                                       last_block.finish_reached_target)
             output_blocks = append_block(output_blocks, new_block)
             seen_first_part_block_tools = set(
                 list(seen_first_part_block_tools) + [new_block.active_tool])
+            last_block = new_block
             continue
 
         if block.state == S_END_EXTRUDER:
@@ -413,9 +524,11 @@ def modify_blocks(blocks, feedrate_override, idle_temps, printing_temps):
             output_blocks = append_block(output_blocks, prime_wipe_block)
             # Add the end extruder block
             output_blocks = append_block(output_blocks, block)
+            last_block = block
             continue
 
         output_blocks = append_block(output_blocks, block)
+        last_block = block
 
     end_block = Block([])
     end_block.state = S_END

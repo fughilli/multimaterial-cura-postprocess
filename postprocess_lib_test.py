@@ -127,11 +127,57 @@ class TestPostprocess(unittest.TestCase):
                                       start_z=0,
                                       finish_z=0,
                                       active_tool=0)
-        block.add_temperatures(True, IDLE_TEMPS, PRINTING_TEMPS)
+        block.add_temperatures(True, IDLE_TEMPS, PRINTING_TEMPS, {}, {})
         self.assertGcodeLinesEqual(block.lines, [
             "G0 X1 Y1", "G0 X20 Y1", "M109 T0 S220", "G1 X2 Y2 E5", "G0 X3 Y10",
             "G1 X3 Y5 E10"
         ])
+        self.assertEqual(block.finish_target_temps[0], 220)
+        self.assertEqual(block.finish_reached_target[0], True)
+
+    def test_block_temp_annotation_already_hot(self):
+        block = postprocess_lib.Block(lines=[
+            "G0 X1 Y1", "G0 X20 Y1", "G1 X2 Y2 E5", "G0 X3 Y10", "G1 X3 Y5 E10"
+        ],
+                                      state=postprocess_lib.S_PRIME_BLOCK,
+                                      start_z=0,
+                                      finish_z=0,
+                                      active_tool=0)
+        block.add_temperatures(True, IDLE_TEMPS, PRINTING_TEMPS,
+                               {0: TEMP_T0_PRINTING}, {0: True})
+        self.assertGcodeLinesEqual(block.lines, [
+            "G0 X1 Y1", "G0 X20 Y1", "G1 X2 Y2 E5", "G0 X3 Y10", "G1 X3 Y5 E10"
+        ])
+        self.assertEqual(block.finish_target_temps[0], 220)
+        self.assertEqual(block.finish_reached_target[0], True)
+
+    def test_temp_minimize(self):
+        temp_minimize_processor = postprocess_lib.TempMinimizeProcessor()
+        lines = [
+            "T0",
+            "M104 S100",
+            "M104 T1 S200",
+            "T1",
+            "M109 S200",
+            "T0",
+            "M109 S100",
+            "T1",
+            "M104 S200",
+            "M109 T0 S100",
+        ]
+        fixed_lines = [
+            "T0",
+            "M104 S100",
+            "M104 T1 S200",
+            "T1",
+            "M109 S200",
+            "T0",
+            "M109 S100",
+            "T1",
+        ]
+        temp_minimize_processor.process_lines(lines)
+        self.assertGcodeLinesEqual(temp_minimize_processor.get_lines(),
+                                   fixed_lines)
 
 
 if __name__ == '__main__':
