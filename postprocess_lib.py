@@ -14,7 +14,7 @@ S_PART = 6
 S_END = 7
 
 raw_re_state_table = [(';END-INIT', S_POST_INIT),
-                      (';TYPE:(WALL.*|SKIN)', S_PART),
+                      (';TYPE:(WALL.*|SKIN|FILL)', S_PART),
                       (';TYPE:PRIME-TOWER', S_PRIME_BLOCK),
                       ('; EXTRUDER START HOME', S_START_EXTRUDER),
                       ('; EXTRUDER END HOME', S_END_EXTRUDER)]
