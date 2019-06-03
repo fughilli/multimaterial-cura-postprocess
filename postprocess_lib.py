@@ -268,30 +268,40 @@ class Block(object):
             new_lines.append(line)
         self.lines = new_lines
 
-    def add_temperatures(self, wait, idle_temps, printing_temps, target_temps,
-                         reached_target):
+    def add_temperatures(self, wait, idle_temps, printing_temps,
+                         start_target_temps, start_reached_target):
         # (idle|printing)_temps are dicts of tool_number -> temperature
         new_lines = []
         extruding = False
         for line in self.lines:
             op, args = parse_gcode(line)
+            # On the first line with an extrusion movement
             if 'E' in args.keys() and not extruding:
-                if (self.active_tool not in self.finish_target_temps.keys()
-                   ) or (self.finish_target_temps[self.active_tool] !=
-                         printing_temps[self.active_tool]):
-                    self.finish_target_temps[self.active_tool] = (
-                        printing_temps[self.active_tool])
-                    self.finish_reached_target[self.active_tool] = wait
-                if not ((self.active_tool in target_temps.keys()) and
-                        (target_temps[self.active_tool] == printing_temps[
-                            self.active_tool]) and
-                        reached_target[self.active_tool]):
+                # If the active tool has not reached temperature
+                reached_temperature = lambda: ((start_target_temps[
+                    self.active_tool] == printing_temps[self.active_tool]) and
+                                               start_reached_target[
+                                                   self.active_tool])
+                if not ((self.active_tool in start_target_temps.keys()) and
+                        reached_temperature()):
                     new_lines.append('M10%s T%d S%d' %
                                      (('9' if wait else '4'), self.active_tool,
                                       printing_temps[self.active_tool]))
                 extruding = True
             new_lines.append(line)
         self.lines = new_lines
+        self.update_finish_temperatures(start_target_temps,
+                                        start_reached_target)
+
+    def update_finish_temperatures(self, start_target_temps,
+                                   start_reached_target):
+        temp_minimize_processor = TempMinimizeProcessor()
+        temp_minimize_processor.target_temps = start_target_temps
+        temp_minimize_processor.reached_target = start_reached_target
+
+        temp_minimize_processor.process_lines(self.lines)
+        self.finish_target_temps = temp_minimize_processor.target_temps
+        self.finish_reached_target = temp_minimize_processor.reached_target
 
 
 class BlockProcessor(TempProcessor):
@@ -452,6 +462,9 @@ def modify_blocks(blocks, feedrate_override, idle_temps, printing_temps):
         if set(seen_first_part_block_tools) == set(idle_temps.keys()):
             block.remove_matching_ops('M10[49]')
 
+        block.update_finish_temperatures(last_block.finish_target_temps,
+                                         last_block.finish_reached_target)
+
         if block.state == S_PRIME_BLOCK:
             # Cache the last prime block for insertion after extruder end
             last_prime_block = block.copy()
@@ -462,11 +475,11 @@ def modify_blocks(blocks, feedrate_override, idle_temps, printing_temps):
             pre_ramp = not (last_block.finish_target_temps[
                 block.active_tool] == printing_temps[block.active_tool] and
                             last_block.finish_reached_target[block.active_tool])
-            if pre_ramp:
-                print("Pre-ramping to %d (prev: %d reached: %s)" %
-                      (printing_temps[block.active_tool],
-                       last_block.finish_target_temps[block.active_tool],
-                       last_block.finish_reached_target[block.active_tool]))
+            print("%spre-ramping to %d (prev: %d reached: %s)" % (
+                ('' if pre_ramp else 'not '), printing_temps[block.active_tool],
+                last_block.finish_target_temps[block.active_tool],
+                last_block.finish_reached_target[block.active_tool]))
+
             prime_processor = PrimeProcessor(block.active_tool, pre_ramp,
                                              idle_temps, printing_temps,
                                              feedrate_override)
@@ -521,8 +534,15 @@ def modify_blocks(blocks, feedrate_override, idle_temps, printing_temps):
             prime_wipe_block.state = S_PRIME_WIPE_BLOCK
             prime_wipe_block.active_tool = block.active_tool
             prime_wipe_block.lines = prime_retrace_processor.get_lines()
+
+            prime_wipe_block.update_finish_temperatures(
+                last_block.finish_target_temps,
+                last_block.finish_reached_target)
             output_blocks = append_block(output_blocks, prime_wipe_block)
             # Add the end extruder block
+            block.update_finish_temperatures(
+                prime_wipe_block.finish_target_temps,
+                prime_wipe_block.finish_reached_target)
             output_blocks = append_block(output_blocks, block)
             last_block = block
             continue

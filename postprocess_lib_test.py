@@ -135,6 +135,22 @@ class TestPostprocess(unittest.TestCase):
         self.assertEqual(block.finish_target_temps[0], 220)
         self.assertEqual(block.finish_reached_target[0], True)
 
+    def test_block_temp_annotation_no_wait(self):
+        block = postprocess_lib.Block(lines=[
+            "G0 X1 Y1", "G0 X20 Y1", "G1 X2 Y2 E5", "G0 X3 Y10", "G1 X3 Y5 E10"
+        ],
+                                      state=postprocess_lib.S_PRIME_BLOCK,
+                                      start_z=0,
+                                      finish_z=0,
+                                      active_tool=0)
+        block.add_temperatures(False, IDLE_TEMPS, PRINTING_TEMPS, {}, {})
+        self.assertGcodeLinesEqual(block.lines, [
+            "G0 X1 Y1", "G0 X20 Y1", "M104 T0 S220", "G1 X2 Y2 E5", "G0 X3 Y10",
+            "G1 X3 Y5 E10"
+        ])
+        self.assertEqual(block.finish_target_temps[0], 220)
+        self.assertEqual(block.finish_reached_target[0], False)
+
     def test_block_temp_annotation_already_hot(self):
         block = postprocess_lib.Block(lines=[
             "G0 X1 Y1", "G0 X20 Y1", "G1 X2 Y2 E5", "G0 X3 Y10", "G1 X3 Y5 E10"
