@@ -384,6 +384,9 @@ class PrimeRetraceProcessor(Processor):
     def get_lines(self):
         # Cut the last 5 lines. This is a hack to remove spurious jogs back to
         # the part at the end of the prime tower.
+        # TODO: This does not solve the spurious jogs. Replace with a check for
+        # whether or not the moves fall into the prime tower bounding box or
+        # not.
         if self.idle_temps is not None:
             return self.lines[:-5] + [self.active_idle_line]
         return self.lines[:-5]
