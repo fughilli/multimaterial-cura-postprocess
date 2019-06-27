@@ -82,7 +82,7 @@ def rewrite(gcode_string, op_regex, override={}, force={}, delete=[]):
         return gcode_string
 
     for k, v in override.items():
-        if args_dict.has_key(k):
+        if k in args_dict:
             args_dict[k] = v
 
     for k, v in force.items():
@@ -166,7 +166,7 @@ class TempProcessor(Processor):
         return True
 
     def update_idle_temps(self, extruder, temperature):
-        if not self.idle_temps.has_key(extruder):
+        if not extruder in self.idle_temps:
             self.idle_temps[extruder] = temperature
             return
 
@@ -176,7 +176,7 @@ class TempProcessor(Processor):
         return
 
     def update_printing_temps(self, extruder, temperature):
-        if not self.printing_temps.has_key(extruder):
+        if not extruder in self.printing_temps:
             self.printing_temps[extruder] = temperature
             return
 
